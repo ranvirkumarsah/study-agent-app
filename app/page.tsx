@@ -1,64 +1,313 @@
-import Image from "next/image";
+"use client";
+
+import { FormEvent, useMemo, useState } from "react";
+
+type Role = "user" | "assistant";
+type SaveStatus = "idle" | "saving" | "saved" | "error";
+
+interface DetectConceptResponse {
+  subject: string;
+  concept: string;
+}
+
+interface ChatMessage {
+  id: string;
+  role: Role;
+  content: string;
+  detectedSubject?: string;
+  detectedConcept?: string;
+  saveStatus?: SaveStatus;
+}
+
+interface SaveConceptPayload {
+  subject: string;
+  concept: string;
+  masteryLevel: "Introduced" | "Developing" | "Proficient" | "Strong";
+  overviewGist: string;
+  deepDiveGist: string[];
+  strongAreas: string[];
+  weakAreas: string[];
+  nextSteps: string[];
+  notes: string;
+}
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function extractBulletItems(text: string, sectionKeyword: string): string[] {
+  const lines = text.split("\n");
+  const startIndex = lines.findIndex((line) =>
+    line.toLowerCase().includes(sectionKeyword.toLowerCase())
+  );
+  if (startIndex === -1) return [];
+
+  const items: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (
+      line.startsWith("#") ||
+      line.toLowerCase().includes("strong areas") ||
+      line.toLowerCase().includes("weak areas") ||
+      line.toLowerCase().includes("next steps")
+    ) {
+      break;
+    }
+    if (line.startsWith("-") || line.startsWith("*") || /^\d+\./.test(line)) {
+      items.push(line.replace(/^[-*\d.\s]+/, "").trim());
+    }
+  }
+  return items;
+}
+
+function inferMasteryLevel(response: string): SaveConceptPayload["masteryLevel"] {
+  const lower = response.toLowerCase();
+  if (
+    lower.includes("edge case") ||
+    lower.includes("nuance") ||
+    lower.includes("trade-off") ||
+    lower.includes("optimization")
+  ) {
+    return "Proficient";
+  }
+  if (lower.includes("advanced") || lower.includes("deep dive")) {
+    return "Developing";
+  }
+  return "Introduced";
+}
+
+function parseSavePayload(
+  subject: string,
+  concept: string,
+  assistantText: string
+): SaveConceptPayload {
+  const lines = assistantText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const overviewGist = lines.slice(0, 2).join(" ").slice(0, 280);
+  const deepDiveGist = lines.slice(0, 8).filter((line) => line.length > 20);
+  const strongAreas = extractBulletItems(assistantText, "strong areas");
+  const weakAreas = extractBulletItems(assistantText, "weak areas");
+  const nextSteps = extractBulletItems(assistantText, "next steps");
+
+  return {
+    subject,
+    concept,
+    masteryLevel: inferMasteryLevel(assistantText),
+    overviewGist: overviewGist || assistantText.slice(0, 280),
+    deepDiveGist: deepDiveGist.length > 0 ? deepDiveGist : [assistantText.slice(0, 400)],
+    strongAreas,
+    weakAreas,
+    nextSteps,
+    notes: assistantText.slice(0, 5000),
+  };
+}
 
 export default function Home() {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const canSend = useMemo(() => input.trim().length > 0 && !isSending, [input, isSending]);
+
+  async function handleSend(event: FormEvent) {
+    event.preventDefault();
+    const userMessage = input.trim();
+    if (!userMessage || isSending) return;
+
+    setIsSending(true);
+    setInput("");
+
+    const userMsgId = createId();
+    const assistantMsgId = createId();
+
+    setMessages((prev) => [
+      ...prev,
+      { id: userMsgId, role: "user", content: userMessage },
+      { id: assistantMsgId, role: "assistant", content: "", saveStatus: "idle" },
+    ]);
+
+    try {
+      let subject = "";
+      let concept = "";
+
+      const detectRes = await fetch("/api/detect-concept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userMessage }),
+      });
+      if (detectRes.ok) {
+        const detected = (await detectRes.json()) as DetectConceptResponse;
+        subject = detected.subject?.trim() ?? "";
+        concept = detected.concept?.trim() ?? "";
+      }
+
+      const chatRes = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userMessage, subject, concept }),
+      });
+
+      if (!chatRes.ok || !chatRes.body) {
+        throw new Error("Chat request failed");
+      }
+
+      const reader = chatRes.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        assistantText += decoder.decode(value, { stream: true });
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? {
+                  ...msg,
+                  content: assistantText,
+                  detectedSubject: subject,
+                  detectedConcept: concept,
+                }
+              : msg
+          )
+        );
+      }
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? {
+                ...msg,
+                content: assistantText.trim(),
+                detectedSubject: subject,
+                detectedConcept: concept,
+              }
+            : msg
+        )
+      );
+    } catch (error) {
+      console.error(error);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? {
+                ...msg,
+                content: "I hit an error while responding. Please try again.",
+                saveStatus: "error",
+              }
+            : msg
+        )
+      );
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  async function handleSaveProgress(message: ChatMessage) {
+    const subject = message.detectedSubject?.trim() ?? "";
+    const concept = message.detectedConcept?.trim() ?? "";
+    if (!subject || !concept) return;
+
+    setMessages((prev) =>
+      prev.map((msg) => (msg.id === message.id ? { ...msg, saveStatus: "saving" } : msg))
+    );
+
+    const payload = parseSavePayload(subject, concept, message.content);
+
+    try {
+      const saveRes = await fetch("/api/save-concept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!saveRes.ok) {
+        throw new Error("Save failed");
+      }
+
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === message.id ? { ...msg, saveStatus: "saved" } : msg))
+      );
+    } catch (error) {
+      console.error(error);
+      setMessages((prev) =>
+        prev.map((msg) => (msg.id === message.id ? { ...msg, saveStatus: "error" } : msg))
+      );
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <main className="mx-auto flex h-screen w-full max-w-4xl flex-col px-4 py-6">
+        <header className="mb-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4">
+          <h1 className="text-lg font-semibold">Study Agent</h1>
+          <p className="text-sm text-slate-400">Ask anything. I will explain and track concept progress.</p>
+        </header>
+
+        <section className="mb-4 flex-1 space-y-3 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          {messages.length === 0 ? (
+            <p className="text-sm text-slate-400">Start by asking about any topic you are studying.</p>
+          ) : (
+            messages.map((message) => {
+              const isUser = message.role === "user";
+              const canSaveProgress =
+                !isUser &&
+                (message.detectedSubject?.length ?? 0) > 0 &&
+                (message.detectedConcept?.length ?? 0) > 0 &&
+                message.content.trim().length > 0;
+
+              return (
+                <div key={message.id} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                      isUser ? "bg-blue-900 text-blue-50" : "border border-slate-700 bg-slate-800 text-slate-100"
+                    }`}
+                  >
+                    {message.content || (isUser ? "" : "Thinking...")}
+                    {canSaveProgress ? (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveProgress(message)}
+                          disabled={message.saveStatus === "saving" || message.saveStatus === "saved"}
+                          className="rounded-md border border-slate-600 bg-slate-900 px-3 py-1 text-xs text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {message.saveStatus === "saving"
+                            ? "Saving..."
+                            : message.saveStatus === "saved"
+                              ? "Saved"
+                              : "Save progress"}
+                        </button>
+                        {message.saveStatus === "error" ? (
+                          <p className="mt-1 text-xs text-rose-300">Could not save. Try again.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </section>
+
+        <form onSubmit={handleSend} className="flex items-end gap-3 rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Ask about a concept..."
+            rows={2}
+            className="max-h-40 min-h-12 flex-1 resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none ring-blue-500 placeholder:text-slate-500 focus:ring-2"
+          />
+          <button
+            type="submit"
+            disabled={!canSend}
+            className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+            {isSending ? "Sending..." : "Send"}
+          </button>
+        </form>
       </main>
     </div>
   );

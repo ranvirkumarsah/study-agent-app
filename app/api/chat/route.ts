@@ -1,6 +1,7 @@
+import { openai } from '@ai-sdk/openai';
 import { streamText } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import { NextRequest, NextResponse } from 'next/server';
+import { formatAiError } from '@/lib/ai-errors';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 interface ChatRequest {
@@ -41,17 +42,6 @@ async function upsertConceptTouch(subject: string, concept: string) {
   if (error) {
     console.error('Supabase upsert touch error:', error);
   }
-}
-
-function formatStreamError(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'Failed to generate a response.';
-  if (message.includes('credit balance')) {
-    return 'Anthropic API credits are too low. Add credits at console.anthropic.com → Plans & Billing, then try again.';
-  }
-  if (message.includes('x-api-key') || message.includes('authentication')) {
-    return 'Anthropic API key is missing or invalid. Check ANTHROPIC_API_KEY in your .env file.';
-  }
-  return `Could not generate a response: ${message}`;
 }
 
 function buildSystemPrompt(
@@ -143,10 +133,16 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = buildSystemPrompt(conceptData, subject, concept);
 
+    let streamError: unknown = null;
+
     const result = streamText({
-      model: anthropic('claude-sonnet-4-20250514'),
+      model: openai('gpt-4o'),
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
+      maxRetries: 0,
+      onError: ({ error }) => {
+        streamError = error;
+      },
     });
 
     const encoder = new TextEncoder();
@@ -161,24 +157,28 @@ export async function POST(request: NextRequest) {
           }
 
           if (!wrote) {
-            try {
-              const text = await result.text;
-              if (text) {
-                controller.enqueue(encoder.encode(text));
-              } else {
-                controller.enqueue(
-                  encoder.encode(
-                    'Anthropic returned an empty response. Your API key may be valid but your account has no available credits.'
-                  )
-                );
+            if (streamError) {
+              controller.enqueue(encoder.encode(formatAiError(streamError)));
+            } else {
+              try {
+                const text = await result.text;
+                if (text) {
+                  controller.enqueue(encoder.encode(text));
+                } else {
+                  controller.enqueue(
+                    encoder.encode(
+                      'OpenAI returned an empty response. Check OPENAI_API_KEY and your account quota.'
+                    )
+                  );
+                }
+              } catch (error) {
+                controller.enqueue(encoder.encode(formatAiError(error)));
               }
-            } catch (error) {
-              controller.enqueue(encoder.encode(formatStreamError(error)));
             }
           }
         } catch (error) {
           if (!wrote) {
-            controller.enqueue(encoder.encode(formatStreamError(error)));
+            controller.enqueue(encoder.encode(formatAiError(streamError ?? error)));
           }
         } finally {
           controller.close();

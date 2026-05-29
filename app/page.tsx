@@ -185,7 +185,7 @@ export default function Home() {
                 ...msg,
                 content:
                   finalText ||
-                  "No response was returned. Your Anthropic account likely has no credits — add billing at console.anthropic.com, then restart npm run dev.",
+                  "No response was returned. Check OPENAI_API_KEY in .env and your OpenAI account quota, then restart npm run dev.",
                 detectedSubject: subject,
                 detectedConcept: concept,
               }

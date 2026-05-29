@@ -1,6 +1,7 @@
-import { anthropic } from '@ai-sdk/anthropic';
+import { openai } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import { NextRequest, NextResponse } from 'next/server';
+import { extractErrorMessage } from '@/lib/ai-errors';
 
 interface DetectConceptRequest {
   userMessage: string;
@@ -64,15 +65,16 @@ export async function POST(request: NextRequest) {
     ].join('\n');
 
     const result = await generateText({
-      model: anthropic('claude-haiku-4-5-20251001'),
+      model: openai('gpt-4o-mini'),
       prompt,
       temperature: 0,
+      maxRetries: 0,
     });
 
     const extracted = parseDetectionResult(result.text);
     return NextResponse.json(extracted);
   } catch (error) {
-    console.error('Detect concept route error:', error);
+    console.error('Detect concept route error:', extractErrorMessage(error));
     return NextResponse.json(emptyResult());
   }
 }

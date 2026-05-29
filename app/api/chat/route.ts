@@ -1,7 +1,7 @@
 import { streamText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
-import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 interface ChatRequest {
   userMessage: string;
@@ -18,14 +18,30 @@ interface ConceptRow {
   strong_areas?: string[] | null;
 }
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+async function upsertConceptTouch(subject: string, concept: string) {
+  const supabase = createSupabaseServerClient();
+  if (!supabase || !subject || !concept) return;
 
-const supabase =
-  supabaseUrl && supabaseKey
-    ? createClient(supabaseUrl, supabaseKey)
-    : null;
+  const { error } = await supabase.from('concepts').upsert(
+    {
+      subject,
+      concept,
+      mastery_level: 'Introduced',
+      overview_gist: '',
+      deep_dive_gist: [],
+      strong_areas: [],
+      weak_areas: [],
+      next_steps: [],
+      notes: '',
+      last_updated: new Date().toISOString(),
+    },
+    { onConflict: 'subject,concept' }
+  );
+
+  if (error) {
+    console.error('Supabase upsert touch error:', error);
+  }
+}
 
 function buildSystemPrompt(
   conceptData: ConceptRow | null,
@@ -85,6 +101,7 @@ ${strongAreasContext}`;
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createSupabaseServerClient();
     const body = (await request.json()) as ChatRequest;
     const userMessage = body.userMessage?.trim();
     const subject = body.subject?.trim() ?? '';
@@ -110,6 +127,8 @@ export async function POST(request: NextRequest) {
         conceptData = data as ConceptRow;
       }
     }
+
+    await upsertConceptTouch(subject, concept);
 
     const systemPrompt = buildSystemPrompt(conceptData, subject, concept);
 

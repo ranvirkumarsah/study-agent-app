@@ -17,6 +17,7 @@ interface ChatMessage {
   detectedSubject?: string;
   detectedConcept?: string;
   saveStatus?: SaveStatus;
+  saveError?: string;
 }
 
 interface SaveConceptPayload {
@@ -196,6 +197,7 @@ export default function Home() {
                 ...msg,
                 content: "I hit an error while responding. Please try again.",
                 saveStatus: "error",
+                saveError: "Chat response failed.",
               }
             : msg
         )
@@ -211,7 +213,9 @@ export default function Home() {
     if (!subject || !concept) return;
 
     setMessages((prev) =>
-      prev.map((msg) => (msg.id === message.id ? { ...msg, saveStatus: "saving" } : msg))
+      prev.map((msg) =>
+        msg.id === message.id ? { ...msg, saveStatus: "saving", saveError: undefined } : msg
+      )
     );
 
     const payload = parseSavePayload(subject, concept, message.content);
@@ -224,7 +228,16 @@ export default function Home() {
       });
 
       if (!saveRes.ok) {
-        throw new Error("Save failed");
+        let errorText = "Save failed";
+        try {
+          const data = (await saveRes.json()) as { error?: string; code?: string | null };
+          if (data.error) {
+            errorText = data.code ? `${data.error} (${data.code})` : data.error;
+          }
+        } catch {
+          // Keep fallback message.
+        }
+        throw new Error(errorText);
       }
 
       setMessages((prev) =>
@@ -233,16 +246,27 @@ export default function Home() {
     } catch (error) {
       console.error(error);
       setMessages((prev) =>
-        prev.map((msg) => (msg.id === message.id ? { ...msg, saveStatus: "error" } : msg))
+        prev.map((msg) =>
+          msg.id === message.id
+            ? {
+                ...msg,
+                saveStatus: "error",
+                saveError:
+                  error instanceof Error
+                    ? error.message
+                    : "Could not save. Check API logs and Supabase config.",
+              }
+            : msg
+        )
       );
     }
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <main className="mx-auto flex h-screen w-full max-w-4xl flex-col px-4 py-6">
+    <div className="min-h-[calc(100vh-57px)] bg-slate-950 text-slate-100">
+      <main className="mx-auto flex h-[calc(100vh-57px)] w-full max-w-4xl flex-col px-4 py-6">
         <header className="mb-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4">
-          <h1 className="text-lg font-semibold">Study Agent</h1>
+          <h1 className="text-lg font-semibold">Chat</h1>
           <p className="text-sm text-slate-400">Ask anything. I will explain and track concept progress.</p>
         </header>
 
@@ -266,25 +290,7 @@ export default function Home() {
                     }`}
                   >
                     {message.content || (isUser ? "" : "Thinking...")}
-                    {canSaveProgress ? (
-                      <div className="mt-3">
-                        <button
-                          type="button"
-                          onClick={() => handleSaveProgress(message)}
-                          disabled={message.saveStatus === "saving" || message.saveStatus === "saved"}
-                          className="rounded-md border border-slate-600 bg-slate-900 px-3 py-1 text-xs text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {message.saveStatus === "saving"
-                            ? "Saving..."
-                            : message.saveStatus === "saved"
-                              ? "Saved"
-                              : "Save progress"}
-                        </button>
-                        {message.saveStatus === "error" ? (
-                          <p className="mt-1 text-xs text-rose-300">Could not save. Try again.</p>
-                        ) : null}
-                      </div>
-                    ) : null}
+                    
                   </div>
                 </div>
               );

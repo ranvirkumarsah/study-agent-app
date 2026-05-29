@@ -16,15 +16,33 @@ function emptyResult(): DetectConceptResponse {
 }
 
 function parseDetectionResult(raw: string): DetectConceptResponse {
-  try {
-    const parsed = JSON.parse(raw) as Partial<DetectConceptResponse>;
-    return {
-      subject: typeof parsed.subject === 'string' ? parsed.subject.trim() : '',
-      concept: typeof parsed.concept === 'string' ? parsed.concept.trim() : '',
-    };
-  } catch {
-    return emptyResult();
+  const cleaned = raw.trim();
+  const candidates = [cleaned];
+
+  const fencedMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch?.[1]) {
+    candidates.push(fencedMatch[1].trim());
   }
+
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(cleaned.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Partial<DetectConceptResponse>;
+      return {
+        subject: typeof parsed.subject === 'string' ? parsed.subject.trim() : '',
+        concept: typeof parsed.concept === 'string' ? parsed.concept.trim() : '',
+      };
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return emptyResult();
 }
 
 export async function POST(request: NextRequest) {

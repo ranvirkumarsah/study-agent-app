@@ -1,5 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 interface SaveConceptRequest {
   subject: string;
@@ -13,24 +13,20 @@ interface SaveConceptRequest {
   notes: string;
 }
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-const supabase =
-  supabaseUrl && supabaseKey
-    ? createClient(supabaseUrl, supabaseKey)
-    : null;
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createSupabaseServerClient();
+
     if (!supabase) {
       return NextResponse.json(
-        { error: 'Supabase is not configured. Missing URL or key.' },
+        {
+          error:
+            'Supabase server write key missing. Set SUPABASE_SERVICE_ROLE_KEY in .env for API route writes.',
+        },
         { status: 500 }
       );
     }
@@ -84,7 +80,15 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error('Supabase upsert error:', error);
-      return NextResponse.json({ error: 'Failed to save concept' }, { status: 500 });
+      return NextResponse.json(
+        {
+          error:
+            error.message ??
+            'Failed to save concept. Check Supabase RLS policies or service role key.',
+          code: error.code ?? null,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({ success: true, concept: data });

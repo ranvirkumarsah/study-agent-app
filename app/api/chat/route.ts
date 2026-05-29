@@ -43,6 +43,17 @@ async function upsertConceptTouch(subject: string, concept: string) {
   }
 }
 
+function formatStreamError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Failed to generate a response.';
+  if (message.includes('credit balance')) {
+    return 'Anthropic API credits are too low. Add credits at console.anthropic.com → Plans & Billing, then try again.';
+  }
+  if (message.includes('x-api-key') || message.includes('authentication')) {
+    return 'Anthropic API key is missing or invalid. Check ANTHROPIC_API_KEY in your .env file.';
+  }
+  return `Could not generate a response: ${message}`;
+}
+
 function buildSystemPrompt(
   conceptData: ConceptRow | null,
   subject: string,
@@ -132,17 +143,51 @@ export async function POST(request: NextRequest) {
 
     const systemPrompt = buildSystemPrompt(conceptData, subject, concept);
 
-    const result = await streamText({
+    const result = streamText({
       model: anthropic('claude-sonnet-4-20250514'),
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     });
 
-    const response = result.toTextStreamResponse();
+    const encoder = new TextEncoder();
 
-    return new NextResponse(response.body, {
-      status: response.status,
-      headers: response.headers,
+    const stream = new ReadableStream({
+      async start(controller) {
+        let wrote = false;
+        try {
+          for await (const chunk of result.textStream) {
+            wrote = true;
+            controller.enqueue(encoder.encode(chunk));
+          }
+
+          if (!wrote) {
+            try {
+              const text = await result.text;
+              if (text) {
+                controller.enqueue(encoder.encode(text));
+              } else {
+                controller.enqueue(
+                  encoder.encode(
+                    'Anthropic returned an empty response. Your API key may be valid but your account has no available credits.'
+                  )
+                );
+              }
+            } catch (error) {
+              controller.enqueue(encoder.encode(formatStreamError(error)));
+            }
+          }
+        } catch (error) {
+          if (!wrote) {
+            controller.enqueue(encoder.encode(formatStreamError(error)));
+          }
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
   } catch (error) {
     console.error('Chat route error:', error);

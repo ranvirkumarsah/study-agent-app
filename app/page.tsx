@@ -1,5 +1,6 @@
 "use client";
 
+import { AppNav } from "@/components/app-nav";
 import { FormEvent, useMemo, useState } from "react";
 
 type Role = "user" | "assistant";
@@ -176,12 +177,15 @@ export default function Home() {
         );
       }
 
+      const finalText = assistantText.trim();
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMsgId
             ? {
                 ...msg,
-                content: assistantText.trim(),
+                content:
+                  finalText ||
+                  "No response was returned. Your Anthropic account likely has no credits — add billing at console.anthropic.com, then restart npm run dev.",
                 detectedSubject: subject,
                 detectedConcept: concept,
               }
@@ -263,7 +267,8 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-[calc(100vh-57px)] bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <AppNav />
       <main className="mx-auto flex h-[calc(100vh-57px)] w-full max-w-4xl flex-col px-4 py-6">
         <header className="mb-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4">
           <h1 className="text-lg font-semibold">Chat</h1>

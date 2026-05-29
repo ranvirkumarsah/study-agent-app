@@ -1,3 +1,4 @@
+import { AppNav } from '@/components/app-nav';
 import { averageMasteryPercent, type ConceptRow } from '@/lib/concepts';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { ConceptCards } from './concept-cards';
@@ -28,7 +29,8 @@ export default async function DashboardPage() {
   const avgMastery = averageMasteryPercent(concepts.map((c) => c.mastery_level));
 
   return (
-    <div className="min-h-[calc(100vh-57px)] bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <AppNav />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold">Dashboard</h1>
